@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LUTView · Display correction lab</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">DISPLAY ENGINEERING / LUT EXPLORER</span><h1>看见每一级灰阶如何到达屏幕</h1></div>
+    <span class="badge" id="modeBadge">软件预览 · 未写入显示器</span>
+  </header>
+  <main>
+    <aside>
+      <section>
+        <h2>01 / 选择校正数据</h2>
+        <label>显示器角色<select id="kind"><option value="main">Main display · 三维选表</option><option value="touch">Touch screen · 一维选表</option></select></label>
+        <div id="metadata" class="muted"></div>
+        <button id="reload">重新读取磁盘 XML</button>
+        <p class="muted small">修改程序目录内的 XML 后重新读取；不修改原文件。曲线、选表和硬件写入均使用文件数据。</p>
+      </section>
+      <section>
+        <h2>02 / 超声 UI knobs</h2>
+        <label id="blackLabel">BlackLevel <output id="blackValue"></output><input id="black" type="range" min="0" max="0" value="0"></label>
+        <label id="tintLabel">Tint <output id="tintValue"></output><input id="tint" type="range" min="0" max="0" value="0"></label>
+        <label>AmbientLight <output id="ambientValue"></output><input id="ambient" type="range" min="0" max="0" value="0"></label>
+        <p class="muted small" id="knobHelp"></p>
+      </section>
+      <section>
+        <h2>03 / 独立显示器亮度</h2>
+        <div class="stat"><span>XML lcdBacklight</span><strong id="backlight">—</strong></div>
+        <p class="muted small">与 RGB Gamma LUT 分开调用，不把这个值乘进像素。DIVA OLED 没有 LCD 背光；这个字段仍用于面板亮度控制。</p>
+        <p class="muted small">UltVMQ：SetBrightness(fullScaleLumens × value)。DIVA USB 接口接收 nits，通常使用默认 250。下方 DDC/CI 试用是通用替代路径，百分比不等于 nits，不是 DIVA USB API。</p>
+        <details><summary>显示器自定义命令（不自动发送）</summary><pre id="custom"></pre><p class="small muted">customLutData / customInitData 是另外的面板命令。本工具不发送这些厂商数据，因此不是完整的面板校准复刻。</p></details>
+      </section>
+    </aside>
+    <div class="workspace">
+      <div id="error" role="alert" hidden></div>
+      <div class="analysis-panels">
+      <section class="matrix-panel">
+        <div class="section-head"><h2 id="matrixTitle">三维坐标 → 一组 Ambient</h2><span id="counts" class="badge"></span></div>
+        <div id="tintTabs" class="tabs"></div>
+        <div id="matrix"></div>
+        <p class="chart-hint">点击点选择坐标；Tint 是前后叠放的层，当前层与选中点高亮。触屏仅使用一维选表。</p>
+        <div id="formula" class="formula"></div>
+        <details class="explanation"><summary>选表原理与当前 XML 数据说明</summary>
+        <p id="matrixHelp" class="muted">AmbientLight 向右，BlackLevel 向上，Tint 向右上方深入。点击点选择整套 RGB 数据，不做 knob 插值或相乘。</p>
+        <p id="dataInsight" class="warning"></p>
+        <div class="pipeline">
+          <div><b id="pipelineKnobs">三个 knob</b><small>选表坐标</small></div><span>→</span>
+          <div><b>Ambient</b><small>rowR / rowG / rowB</small></div><span>→</span>
+          <div><b>15 bit → 16 bit</b><small>每项 XML 值 × 2</small></div><span>→</span>
+          <div><b>Intel Gamma Ramp</b><small>3 × 256 WORD，1536 bytes</small></div><span>→</span>
+          <div><b>显示扫描输出</b><small>R′=Rlut[R]，G′=Glut[G]，B′=Blut[B]</small></div>
+        </div>
+        <p class="muted small">这是 3 个独立的一维 LUT，不是混合 RGB 的 3×3 色彩矩阵。原 Intel 路径：IgfxExt.CUIExternal / ICUIExternal8 / SetGammaRamp(目标 UID)。真实结果还受驱动、HDR、色彩管理与面板响应影响。</p>
+        </details>
+      </section>
+      <section class="curve-panel">
+        <div class="section-head"><h2>RGB 和 LCD backlight传递曲线</h2><div class="legend"><span class="red">R</span><span class="green">G</span><span class="blue">B</span></div></div>
+        <div class="backlight-caption"><span id="curveBacklight">lcdBacklight —</span><span>独立右轴 · 不与 RGB 相乘</span></div>
+        <div id="curveViewport" class="curve-viewport">
+          <canvas id="curve" width="600" height="190" aria-label="RGB Gamma transfer curves"></canvas>
+        </div>
+        <p class="chart-hint">每通道 256 项连成曲线；移动下方索引可查看对应点。</p>
+        <label>查表输入索引 i <output id="sampleValue">128</output><input id="sample" type="range" min="0" max="255" value="128"></label>
+        <div id="sampleRows" class="samples"></div>
+        <details class="explanation"><summary>坐标说明 / 全部 256 项数据</summary>
+          <p class="muted small">横轴：输入通道码值 0–255。纵轴：送入 Gamma API 的 16 位输出 0–65535。每个通道的 256 项数据连成曲线，图表适应面板宽度，无需滚动。重合曲线用不同线宽区分，当前查表索引用 R 大、G 中、B 小的同心点标出。连线仅辅助阅读，不改变实际查表数据。没有按本表最大值重新归一化。</p>
+          <p class="muted small">橙色水平虚线是当前 Ambient 的 lcdBacklight，读取独立右轴 0–100%。它对所有灰阶使用同一个面板亮度设置，并不是第四条 Gamma LUT。RGB 和 lcdBacklight 一起被选中，但仍走不同硬件接口；此处百分比不是测量的亮度或 nits。</p>
+          <div class="table-scroll"><table><thead><tr><th>i</th><th>R XML / API</th><th>G XML / API</th><th>B XML / API</th></tr></thead><tbody id="rawRows"></tbody></table></div>
+        </details>
+      </section>
+      </div>
+      <section class="image-panel">
+        <div class="section-head">
+          <div><span class="eyebrow">LIVE IMAGE COMPARISON</span><h2>像素映射与图像对照</h2></div>
+          <div class="image-actions"><label class="upload">载入本地图像<input id="image" type="file" accept="image/*"></label><button id="pattern">恢复测试图</button></div>
+        </div>
+        <div class="pixel-controls">
+          <label>输入 R<input id="pixelR" type="number" min="0" max="255" value="128"></label>
+          <label>输入 G<input id="pixelG" type="number" min="0" max="255" value="128"></label>
+          <label>输入 B<input id="pixelB" type="number" min="0" max="255" value="128"></label>
+          <div id="pixelResult"></div>
+        </div>
+        <div class="previews">
+          <figure><figcaption><span class="image-tag">INPUT</span>输入 / 未做本工具查表</figcaption><canvas id="before" width="768" height="480"></canvas></figure>
+          <figure class="corrected"><figcaption><span class="image-tag">LUT OUTPUT</span><span id="afterCaption">按 XML 查表 / 软件近似预览</span></figcaption><canvas id="after" width="768" height="480"></canvas></figure>
+        </div>
+        <p class="muted small">右图使用 round((XML[i] × 2) / 65535 × 255)，仅近似数字传递，不模拟 nits、面板光学或背光。两图仍会经过操作系统现有的颜色处理。真实硬件试用期间暂停右图软件查表，避免二次校正。图像只在本浏览器处理，不上传。</p>
+      </section>
+      <section class="hardware">
+        <div class="section-head"><h2>真实显示器试用 · 明确确认后写入</h2><button id="refreshDisplays">刷新设备</button></div>
+        <p class="warning">会影响目标显示器的整个桌面，不仅是网页。不要在临床使用或共享显示任务中试用。每次应用后 15 秒自动恢复；关闭服务器也会请求恢复。驱动不支持、HDR、远程桌面或其他程序接管时会明确报错。</p>
+        <p id="capabilities" class="muted small">正在读取设备能力…</p>
+        <label class="confirm"><input id="confirm" type="checkbox">我已确认目标设备，并同意临时改变其显示效果（15 秒）。</label>
+        <div class="hardware-grid">
+          <div>
+            <h3>RGB Gamma 路径</h3>
+            <label>接口<select id="backend"><option value="intel">Intel CUI · 与 UltVMQ 相同接口</option><option value="gdi">Windows GDI · 通用替代接口（非 Intel CUI）</option></select></label>
+            <label>目标显示器<select id="display"></select></label>
+            <p id="gammaCapability" class="warning small"></p>
+            <button id="applyGamma" disabled>试用当前 RGB LUT · 15 秒</button>
+          </div>
+          <div>
+            <h3>面板亮度路径（独立）</h3>
+            <label>Windows 物理显示器<select id="brightnessDisplay"></select></label>
+            <p id="brightnessCapability" class="warning small"></p>
+            <p class="muted small">SetMonitorBrightness / DDC/CI，按 XML lcdBacklight 映射到设备 min–max。设备必须支持 DDC/CI。不会写入 RGB 表，也不会调用 DIVA USB nits 接口。</p>
+            <button id="applyBrightness" disabled>试用 XML lcdBacklight · 15 秒</button>
+          </div>
+        </div>
+        <div class="section-head"><p id="hardwareStatus" role="status">尚未写入硬件</p><button id="restore">立即恢复原值</button></div>
+        <p class="muted small">写入前保存并落盘原值，写入后逐项读回检查。读回相同不代表已经验证实际出光。异常退出时，下次启动桥接器会尝试恢复；失败会保留 display-recovery.json 并报错，不会假装恢复成功。</p>
+      </section>
+      <section>
+        <h2>实现依据与边界</h2>
+        <ul class="muted small">
+          <li>ldsFileReader.cpp：读取 RGB 行，每项左移一位；主屏与触屏均如此。</li>
+          <li>ldsmain.cpp：index = Ambient + Tint × AmbientCount + BlackLevel × AmbientCount × TintCount（全部零基）。</li>
+          <li>fcsdf.cpp：组装 GAMMARAMP 并按主屏 / 触屏的 Intel UID 调用 SetGammaRamp。</li>
+          <li>fcLcdBacklight.cpp / HwDevDivaDisplayUtlImpl.cpp：独立面板亮度、nits 与 USB 命令，不是 RGB Gamma。</li>
+          <li>本工具使用 XML 中 Active*Indexes 校验完整维度。原 LDS 使用编译期数量并缓存 XML；本工具按按钮重新读取。</li>
+          <li>不自动识别哪块屏是 Main / TS，必须手动选择；不实现 SVIO、Protego 非 PWM 补偿或厂商自定义初始化。</li>
+        </ul>
+      </section>
+    </div>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
